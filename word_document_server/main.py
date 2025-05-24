@@ -3,8 +3,6 @@ Main entry point for the Word Document MCP Server.
 Acts as the central controller for the MCP server that handles Word document operations.
 """
 
-import os
-import sys
 from mcp.server.fastmcp import FastMCP
 from word_document_server.tools import (
     document_tools,
@@ -58,6 +56,15 @@ def register_tools():
     mcp.tool()(extended_document_tools.get_paragraph_text_from_document)
     mcp.tool()(extended_document_tools.find_text_in_document)
     mcp.tool()(extended_document_tools.convert_to_pdf)
+    mcp.tool()(extended_document_tools.get_document_structure_details_from_document)
+    mcp.tool()(extended_document_tools.get_table_cell_content_from_document)
+    mcp.tool()(extended_document_tools.set_table_cell_text)
+    mcp.tool()(extended_document_tools.set_paragraph_text)
+    mcp.tool()(extended_document_tools.insert_paragraph_after_index)
+    mcp.tool()(extended_document_tools.clear_table_cell_content)
+    mcp.tool()(extended_document_tools.add_paragraph_to_table_cell)
+    mcp.tool()(extended_document_tools.search_and_replace_in_scope)
+    mcp.tool()(extended_document_tools.is_element_empty)
 
 
 def run_server():

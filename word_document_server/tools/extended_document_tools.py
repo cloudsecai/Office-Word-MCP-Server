@@ -1,66 +1,132 @@
 """
-Extended document tools for Word Document Server.
+Extended document manipulation tools for Word Document Server.
 
-These tools provide enhanced document content extraction and search capabilities.
+This module provides advanced document manipulation capabilities including
+detailed content inspection, targeted editing, and scope-specific operations.
 """
 import os
 import json
 import subprocess
 import platform
 import shutil
-from typing import Dict, List, Optional, Any, Union, Tuple
-from docx import Document
+from typing import Optional
 
 from word_document_server.utils.file_utils import check_file_writeable, ensure_docx_extension
-from word_document_server.utils.extended_document_utils import get_paragraph_text, find_text
+from word_document_server.utils.paragraph_utils import get_paragraph_text, set_paragraph_text_util, insert_paragraph_after_index_util
+from word_document_server.utils.doc_structure_utils import find_text, get_document_structure_details, is_element_empty_util
+from word_document_server.utils.table_utils import get_table_cell_content, set_table_cell_text_util, clear_table_cell_content_util, add_paragraph_to_table_cell_util
+from word_document_server.utils.editing_utils import search_and_replace_in_scope_util
+
+
+def _validate_file_exists(filename: str) -> Optional[str]:
+    """Validate that a file exists and return user-friendly error if not."""
+    if not os.path.exists(filename):
+        return f"The document '{filename}' could not be found. Please check the file path and try again."
+    return None
+
+
+def _validate_non_negative_index(value: int, param_name: str) -> Optional[str]:
+    """Validate that an index is non-negative and return user-friendly error if not."""
+    if value < 0:
+        return f"The {param_name} must be 0 or greater (you provided {value}). Indexes start from 0."
+    return None
+
+
+def _validate_table_coordinates(table_index: int, row_index: int, col_index: int) -> Optional[str]:
+    """Validate table coordinates and return user-friendly error if invalid."""
+    if table_index < 0:
+        return f"The table_index must be 0 or greater (you provided {table_index}). Table indexes start from 0."
+    if row_index < 0:
+        return f"The row_index must be 0 or greater (you provided {row_index}). Row indexes start from 0."
+    if col_index < 0:
+        return f"The col_index must be 0 or greater (you provided {col_index}). Column indexes start from 0."
+    return None
+
+
+def _check_file_writable(filename: str) -> Optional[str]:
+    """Check if file is writable and return user-friendly error if not."""
+    is_writeable, error_message = check_file_writeable(filename)
+    if not is_writeable:
+        return f"Cannot modify the document: {error_message}. Try creating a copy first or check file permissions."
+    return None
+
+
+def _validate_scope_identifier(scope_type: str, scope_identifier: dict) -> Optional[str]:
+    """Validate scope identifier structure and return user-friendly error if invalid."""
+    if not isinstance(scope_identifier, dict):
+        return "The scope_identifier must be a dictionary. See the function documentation for examples."
+    
+    if scope_type == "paragraph":
+        if "paragraph_index" not in scope_identifier:
+            return 'For paragraph scope, use: {"paragraph_index": 0}'
+    elif scope_type == "table_cell":
+        required_keys = ["table_index", "row_index", "col_index"]
+        missing_keys = [key for key in required_keys if key not in scope_identifier]
+        if missing_keys:
+            return f'For table_cell scope, use: {{"table_index": 0, "row_index": 1, "col_index": 2}}. Missing: {missing_keys}'
+    
+    return None
 
 
 async def get_paragraph_text_from_document(filename: str, paragraph_index: int) -> str:
-    """Get text from a specific paragraph in a Word document.
+    """Get text content from a specific paragraph in a Word document.
     
     Args:
         filename: Path to the Word document
-        paragraph_index: Index of the paragraph to retrieve (0-based)
+        paragraph_index: Index of the paragraph to read (0-based)
+        
+    Returns:
+        JSON string containing the paragraph text and metadata
+        
+    Example:
+        get_paragraph_text_from_document("report.docx", 0)
+        # Returns first paragraph text
     """
     filename = ensure_docx_extension(filename)
     
-    if not os.path.exists(filename):
-        return f"Document {filename} does not exist"
+    # Validate inputs
+    if error := _validate_file_exists(filename):
+        return error
     
-
-    if paragraph_index < 0:
-        return "Invalid parameter: paragraph_index must be a non-negative integer"
+    if error := _validate_non_negative_index(paragraph_index, "paragraph_index"):
+        return error
     
     try:
         result = get_paragraph_text(filename, paragraph_index)
         return json.dumps(result, indent=2)
     except Exception as e:
-        return f"Failed to get paragraph text: {str(e)}"
+        return f"Unable to read paragraph text: {str(e)}"
 
 
 async def find_text_in_document(filename: str, text_to_find: str, match_case: bool = True, whole_word: bool = False) -> str:
-    """Find occurrences of specific text in a Word document.
+    """Find all occurrences of text in a Word document with location details.
     
     Args:
         filename: Path to the Word document
-        text_to_find: Text to search for in the document
-        match_case: Whether to match case (True) or ignore case (False)
-        whole_word: Whether to match whole words only (True) or substrings (False)
+        text_to_find: Text to search for
+        match_case: Whether search should be case-sensitive (default: True)
+        whole_word: Whether to match whole words only (default: False)
+        
+    Returns:
+        JSON string containing all matches with their locations
+        
+    Example:
+        find_text_in_document("report.docx", "summary", match_case=False)
     """
     filename = ensure_docx_extension(filename)
     
-    if not os.path.exists(filename):
-        return f"Document {filename} does not exist"
+    # Validate inputs
+    if error := _validate_file_exists(filename):
+        return error
     
-    if not text_to_find:
-        return "Search text cannot be empty"
+    if not text_to_find.strip():
+        return "Please provide text to search for. Empty search text is not allowed."
     
     try:
-        
         result = find_text(filename, text_to_find, match_case, whole_word)
         return json.dumps(result, indent=2)
     except Exception as e:
-        return f"Failed to search for text: {str(e)}"
+        return f"Search failed: {str(e)}"
 
 
 async def convert_to_pdf(filename: str, output_filename: Optional[str] = None) -> str:
@@ -189,3 +255,350 @@ async def convert_to_pdf(filename: str, output_filename: Optional[str] = None) -
             
     except Exception as e:
         return f"Failed to convert document to PDF: {str(e)}"
+
+
+async def get_document_structure_details_from_document(filename: str) -> str:
+    """Get comprehensive structure details of a Word document including paragraphs, tables, styles, and run-level formatting.
+    
+    Args:
+        filename: Path to the Word document
+        
+    Returns:
+        JSON string containing detailed document structure information
+        
+    Example:
+        get_document_structure_details_from_document("report.docx")
+        # Returns complete document structure analysis
+    """
+    filename = ensure_docx_extension(filename)
+    
+    if error := _validate_file_exists(filename):
+        return error
+    
+    try:
+        result = get_document_structure_details(filename)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Unable to analyze document structure: {str(e)}"
+
+
+async def get_table_cell_content_from_document(filename: str, table_index: int, row_index: int, col_index: int) -> str:
+    """Get detailed content from a specific table cell in a Word document.
+    
+    Args:
+        filename: Path to the Word document
+        table_index: Index of the table (0-based)
+        row_index: Index of the row (0-based)
+        col_index: Index of the column (0-based)
+        
+    Returns:
+        JSON string containing detailed cell content and formatting
+        
+    Example:
+        get_table_cell_content_from_document("report.docx", 0, 1, 2)
+        # Gets content from first table, second row, third column
+    """
+    filename = ensure_docx_extension(filename)
+    
+    # Validate inputs
+    if error := _validate_file_exists(filename):
+        return error
+    
+    if error := _validate_table_coordinates(table_index, row_index, col_index):
+        return error
+    
+    try:
+        result = get_table_cell_content(filename, table_index, row_index, col_index)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Unable to read table cell content: {str(e)}"
+
+
+async def set_table_cell_text(filename: str, table_index: int, row_index: int, col_index: int, 
+                             text_to_set: str, clear_existing_content: bool = True, 
+                             paragraph_style: Optional[str] = None) -> str:
+    """Set text in a specific table cell in a Word document.
+    
+    Args:
+        filename: Path to the Word document
+        table_index: Index of the table (0-based)
+        row_index: Index of the row (0-based)
+        col_index: Index of the column (0-based)
+        text_to_set: Text to set in the cell
+        clear_existing_content: Whether to clear existing content first (default: True)
+        paragraph_style: Optional paragraph style to apply (e.g., "Normal", "Heading 1")
+        
+    Returns:
+        Success message or error description
+        
+    Example:
+        set_table_cell_text("report.docx", 0, 1, 2, "New content", True, "Normal")
+    """
+    filename = ensure_docx_extension(filename)
+    
+    # Validate inputs
+    if error := _validate_file_exists(filename):
+        return error
+    
+    if error := _validate_table_coordinates(table_index, row_index, col_index):
+        return error
+    
+    if error := _check_file_writable(filename):
+        return error
+    
+    try:
+        result = set_table_cell_text_util(filename, table_index, row_index, col_index, 
+                                   text_to_set, clear_existing_content, paragraph_style)
+        if "error" in result:
+            return f"Failed to update table cell: {result['error']}"
+        return result["message"]
+    except Exception as e:
+        return f"Unable to set table cell text: {str(e)}"
+
+
+async def set_paragraph_text(filename: str, paragraph_index: int, new_text: str, 
+                            style_to_apply: Optional[str] = None) -> str:
+    """Set text in a specific paragraph in a Word document.
+    
+    Args:
+        filename: Path to the Word document
+        paragraph_index: Index of the paragraph (0-based)
+        new_text: New text to set
+        style_to_apply: Optional style to apply to the paragraph (e.g., "Normal", "Heading 1")
+        
+    Returns:
+        Success message or error description
+        
+    Example:
+        set_paragraph_text("report.docx", 0, "New paragraph content", "Heading 1")
+    """
+    filename = ensure_docx_extension(filename)
+    
+    # Validate inputs
+    if error := _validate_file_exists(filename):
+        return error
+    
+    if error := _validate_non_negative_index(paragraph_index, "paragraph_index"):
+        return error
+    
+    if error := _check_file_writable(filename):
+        return error
+    
+    try:
+        result = set_paragraph_text_util(filename, paragraph_index, new_text, style_to_apply)
+        if "error" in result:
+            return f"Failed to update paragraph: {result['error']}"
+        return result["message"]
+    except Exception as e:
+        return f"Unable to set paragraph text: {str(e)}"
+
+
+async def insert_paragraph_after_index(filename: str, target_paragraph_index: int, text_to_insert: str, 
+                                      style_to_apply: Optional[str] = None) -> str:
+    """Insert a new paragraph after a specific paragraph index in a Word document.
+    
+    Args:
+        filename: Path to the Word document
+        target_paragraph_index: Index of the paragraph after which to insert (0-based)
+        text_to_insert: Text for the new paragraph
+        style_to_apply: Optional style to apply to the new paragraph (e.g., "Normal", "Heading 1")
+        
+    Returns:
+        Success message or error description
+        
+    Example:
+        insert_paragraph_after_index("report.docx", 0, "New paragraph", "Normal")
+        # Inserts new paragraph after the first paragraph
+    """
+    filename = ensure_docx_extension(filename)
+    
+    # Validate inputs
+    if error := _validate_file_exists(filename):
+        return error
+    
+    if error := _validate_non_negative_index(target_paragraph_index, "target_paragraph_index"):
+        return error
+    
+    if error := _check_file_writable(filename):
+        return error
+    
+    try:
+        result = insert_paragraph_after_index_util(filename, target_paragraph_index, text_to_insert, style_to_apply)
+        if "error" in result:
+            return f"Failed to insert paragraph: {result['error']}"
+        return result["message"]
+    except Exception as e:
+        return f"Unable to insert paragraph: {str(e)}"
+
+
+async def clear_table_cell_content(filename: str, table_index: int, row_index: int, col_index: int) -> str:
+    """Clear all content from a specific table cell in a Word document.
+    
+    Args:
+        filename: Path to the Word document
+        table_index: Index of the table (0-based)
+        row_index: Index of the row (0-based)
+        col_index: Index of the column (0-based)
+        
+    Returns:
+        Success message or error description
+        
+    Example:
+        clear_table_cell_content("report.docx", 0, 1, 2)
+        # Clears content from first table, second row, third column
+    """
+    filename = ensure_docx_extension(filename)
+    
+    # Validate inputs
+    if error := _validate_file_exists(filename):
+        return error
+    
+    if error := _validate_table_coordinates(table_index, row_index, col_index):
+        return error
+    
+    if error := _check_file_writable(filename):
+        return error
+    
+    try:
+        result = clear_table_cell_content_util(filename, table_index, row_index, col_index)
+        if "error" in result:
+            return f"Failed to clear cell content: {result['error']}"
+        return result["message"]
+    except Exception as e:
+        return f"Unable to clear table cell content: {str(e)}"
+
+
+async def add_paragraph_to_table_cell(filename: str, table_index: int, row_index: int, col_index: int, 
+                                     paragraph_text: str, paragraph_style: Optional[str] = None) -> str:
+    """Add a new paragraph to a specific table cell in a Word document.
+    
+    Args:
+        filename: Path to the Word document
+        table_index: Index of the table (0-based)
+        row_index: Index of the row (0-based)
+        col_index: Index of the column (0-based)
+        paragraph_text: Text for the new paragraph
+        paragraph_style: Optional style to apply to the new paragraph (e.g., "Normal", "List Paragraph")
+        
+    Returns:
+        Success message or error description
+        
+    Example:
+        add_paragraph_to_table_cell("report.docx", 0, 1, 2, "Additional content", "Normal")
+    """
+    filename = ensure_docx_extension(filename)
+    
+    # Validate inputs
+    if error := _validate_file_exists(filename):
+        return error
+    
+    if error := _validate_table_coordinates(table_index, row_index, col_index):
+        return error
+    
+    if error := _check_file_writable(filename):
+        return error
+    
+    try:
+        result = add_paragraph_to_table_cell_util(filename, table_index, row_index, col_index, 
+                                                paragraph_text, paragraph_style)
+        if "error" in result:
+            return f"Failed to add paragraph to cell: {result['error']}"
+        return result["message"]
+    except Exception as e:
+        return f"Unable to add paragraph to table cell: {str(e)}"
+
+
+async def search_and_replace_in_scope(filename: str, find_text: str, replace_text: str, 
+                                     scope_type: str, scope_identifier: dict) -> str:
+    """Search and replace text within a specific scope (paragraph or table cell) in a Word document.
+    
+    Args:
+        filename: Path to the Word document
+        find_text: Text to find
+        replace_text: Text to replace with
+        scope_type: Type of scope ("paragraph" or "table_cell")
+        scope_identifier: Dictionary identifying the scope element
+        
+    Scope identifier examples:
+        For paragraph: {"paragraph_index": 0}
+        For table_cell: {"table_index": 0, "row_index": 1, "col_index": 2}
+        
+    Returns:
+        Success message with replacement count or error description
+        
+    Example:
+        search_and_replace_in_scope("report.docx", "old text", "new text", 
+                                   "paragraph", {"paragraph_index": 0})
+    """
+    filename = ensure_docx_extension(filename)
+    
+    # Validate inputs
+    if error := _validate_file_exists(filename):
+        return error
+    
+    if not find_text.strip():
+        return "Please provide text to find. Empty search text is not allowed."
+    
+    if scope_type not in ["paragraph", "table_cell"]:
+        return f"Invalid scope_type '{scope_type}'. Must be either 'paragraph' or 'table_cell'."
+    
+    if error := _validate_scope_identifier(scope_type, scope_identifier):
+        return error
+    
+    if error := _check_file_writable(filename):
+        return error
+    
+    try:
+        result = search_and_replace_in_scope_util(filename, find_text, replace_text, scope_type, scope_identifier)
+        if "error" in result:
+            return f"Search and replace failed: {result['error']}"
+        return result["message"]
+    except Exception as e:
+        return f"Unable to search and replace in scope: {str(e)}"
+
+
+async def is_element_empty(filename: str, element_type: str, element_identifier: dict) -> str:
+    """Check if a specific element (paragraph or table cell) is empty in a Word document.
+    
+    Args:
+        filename: Path to the Word document
+        element_type: Type of element ("paragraph" or "table_cell")
+        element_identifier: Dictionary identifying the element
+        
+    Element identifier examples:
+        For paragraph: {"paragraph_index": 0}
+        For table_cell: {"table_index": 0, "row_index": 1, "col_index": 2}
+        
+    Returns:
+        User-friendly message indicating if element is empty or contains content
+        
+    Example:
+        is_element_empty("report.docx", "paragraph", {"paragraph_index": 0})
+    """
+    filename = ensure_docx_extension(filename)
+    
+    # Validate inputs
+    if error := _validate_file_exists(filename):
+        return error
+    
+    if element_type not in ["paragraph", "table_cell"]:
+        return f"Invalid element_type '{element_type}'. Must be either 'paragraph' or 'table_cell'."
+    
+    if error := _validate_scope_identifier(element_type, element_identifier):
+        return error
+    
+    try:
+        result = is_element_empty_util(filename, element_type, element_identifier)
+        if "error" in result:
+            return f"Unable to check element: {result['error']}"
+        
+        # Return a user-friendly response
+        if result["is_empty"]:
+            return "The element is empty (contains no text or only whitespace)."
+        else:
+            content_preview = result['text_content'][:100]
+            if len(result['text_content']) > 100:
+                content_preview += "..."
+            return f"The element contains content: '{content_preview}'"
+    except Exception as e:
+        return f"Unable to check if element is empty: {str(e)}"

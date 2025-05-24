@@ -122,7 +122,7 @@ def setup_venv():
         print(f"Error: Could not execute {pip_path}")
         print("Try activating the virtual environment manually and installing requirements:")
         if is_windows:
-            print(f".venv\\Scripts\\activate")
+            print(".venv\\Scripts\\activate")
         else:
             print("source .venv/bin/activate")
         print("pip install mcp[cli] python-docx")

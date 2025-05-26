@@ -4,6 +4,10 @@ Document utility functions for Word Document Server.
 
 from typing import Dict, Any
 from docx import Document
+import zipfile
+import xml.etree.ElementTree as ET
+import logging
+from collections import defaultdict
 
 
 def get_document_properties(doc_path: str) -> Dict[str, Any]:
@@ -35,6 +39,11 @@ def get_document_properties(doc_path: str) -> Dict[str, Any]:
         }
     except Exception as e:
         return {"error": f"Failed to get document properties: {str(e)}"}
+
+
+def get_document_text(doc_path: str) -> str:
+    """Extract all text from a Word document with structured table formatting for LLM parsing, including comments and suggestions as inline tags."""
+    return extract_document_text_with_comments_and_suggestions(doc_path)
 
 
 def extract_document_text(doc_path: str) -> str:
@@ -242,3 +251,157 @@ def find_and_replace_text(doc, old_text, new_text):
                                 count += 1
 
     return count
+
+
+def extract_document_text_with_comments_and_suggestions(docx_path: str) -> str:
+    """
+    Extracts text from a Word document (.docx), inlining comments and tracked changes (suggestions)
+    using special tags for LLM consumption. Tags are defined at the top of the output if present.
+    Returns a string with tags: [COMMENT], [SUGGESTION], [SUGGESTED_ADDITION], [SUGGESTED_DELETION].
+    """
+    TAG_DEFS = """
+=== TAG DEFINITIONS ===
+[COMMENT]: A user comment on the enclosed text. Format: [COMMENT ...]anchor text | comment text[/COMMENT]
+[SUGGESTION]: A suggested replacement. Format: [SUGGESTION ... original=\"old text\"]new text[/SUGGESTION]
+[SUGGESTED_ADDITION]: A suggested addition. Format: [SUGGESTED_ADDITION ...]added text[/SUGGESTED_ADDITION]
+[SUGGESTED_DELETION]: A suggested deletion. Format: [SUGGESTED_DELETION ...]text to remove[/SUGGESTED_DELETION]
+=== END TAG DEFINITIONS ===
+
+"""
+    try:
+        with zipfile.ZipFile(docx_path) as docx_zip:
+            # Parse main document XML
+            with docx_zip.open('word/document.xml') as doc_xml:
+                doc_tree = ET.parse(doc_xml)
+                doc_root = doc_tree.getroot()
+            # Parse comments XML (if present)
+            comments = {}
+            try:
+                with docx_zip.open('word/comments.xml') as comments_xml:
+                    comments_tree = ET.parse(comments_xml)
+                    for c in comments_tree.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}comment'):
+                        cid = c.attrib.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}id')
+                        author = c.attrib.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}author', '')
+                        date = c.attrib.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}date', '')
+                        text = ''.join(t.text or '' for t in c.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t'))
+                        comments[cid] = {'author': author, 'date': date, 'text': text}
+            except KeyError:
+                logging.info("No comments.xml found in docx.")
+            except Exception as e:
+                logging.error(f"Error parsing comments.xml: {e}")
+
+            # Build a map of comment anchors (commentRangeStart/End)
+            comment_starts = {}
+            comment_ends = {}
+            for elem in doc_root.iter():
+                if elem.tag.endswith('commentRangeStart'):
+                    cid = elem.attrib.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}id')
+                    comment_starts[cid] = elem
+                if elem.tag.endswith('commentRangeEnd'):
+                    cid = elem.attrib.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}id')
+                    comment_ends[cid] = elem
+
+            # Helper to get all text in a run or element
+            def get_text(e):
+                return ''.join(t.text or '' for t in e.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t'))
+
+            # Helper to get author/date from w:ins/w:del
+            def get_change_metadata(e):
+                author = e.attrib.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}author', '')
+                date = e.attrib.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}date', '')
+                return author, date
+
+            # Walk paragraphs and tables, reconstructing text with tags
+            ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+            output = []
+            tags_used = set()
+            para_idx = 0
+            for body_child in doc_root.find('w:body', ns):
+                if body_child.tag == '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p':
+                    # Handle paragraph
+                    para_text = ''
+                    i = 0
+                    runs = list(body_child)
+                    while i < len(runs):
+                        run = runs[i]
+                        # Handle comment start
+                        if run.tag.endswith('commentRangeStart'):
+                            cid = run.attrib.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}id')
+                            anchor_text = ''
+                            j = i + 1
+                            # Collect anchor text until commentRangeEnd
+                            while j < len(runs):
+                                if runs[j].tag.endswith('commentRangeEnd') and runs[j].attrib.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}id') == cid:
+                                    break
+                                anchor_text += get_text(runs[j])
+                                j += 1
+                            comment = comments.get(cid, {})
+                            author = comment.get('author', '')
+                            date = comment.get('date', '')
+                            ctext = comment.get('text', '')
+                            tag = f'[COMMENT id={cid} author="{author}" date="{date}"]{anchor_text} | {ctext}[/COMMENT]'
+                            para_text += tag
+                            tags_used.add('COMMENT')
+                            i = j  # Skip to after commentRangeEnd
+                        # Handle insertions (suggested additions or replacements)
+                        elif run.tag.endswith('ins'):
+                            author, date = get_change_metadata(run)
+                            ins_text = get_text(run)
+                            # Check for replacement (w:del immediately before w:ins)
+                            if i > 0 and runs[i-1].tag.endswith('del'):
+                                del_run = runs[i-1]
+                                del_text = get_text(del_run)
+                                tag = f'[SUGGESTION id={i} author="{author}" date="{date}" original="{del_text}"]{ins_text}[/SUGGESTION]'
+                                tags_used.add('SUGGESTION')
+                                # Remove the deletion from output (handled here)
+                                para_text = para_text[:-len(del_text)] if para_text.endswith(del_text) else para_text
+                            else:
+                                tag = f'[SUGGESTED_ADDITION id={i} author="{author}" date="{date}"]{ins_text}[/SUGGESTED_ADDITION]'
+                                tags_used.add('SUGGESTED_ADDITION')
+                            para_text += tag
+                        # Handle deletions (suggested deletions)
+                        elif run.tag.endswith('del'):
+                            author, date = get_change_metadata(run)
+                            del_text = get_text(run)
+                            tag = f'[SUGGESTED_DELETION id={i} author="{author}" date="{date}"]{del_text}[/SUGGESTED_DELETION]'
+                            para_text += tag
+                            tags_used.add('SUGGESTED_DELETION')
+                        # Normal run
+                        elif run.tag.endswith('r'):
+                            para_text += get_text(run)
+                        i += 1
+                    output.append(para_text)
+                    para_idx += 1
+                elif body_child.tag == '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tbl':
+                    # Handle table (flattened as text for now)
+                    for row in body_child.findall('.//w:tr', ns):
+                        row_text = []
+                        for cell in row.findall('.//w:tc', ns):
+                            cell_text = ''
+                            for para in cell.findall('.//w:p', ns):
+                                para_text = ''
+                                for run in para:
+                                    if run.tag.endswith('r'):
+                                        para_text += get_text(run)
+                                    elif run.tag.endswith('ins'):
+                                        author, date = get_change_metadata(run)
+                                        ins_text = get_text(run)
+                                        tag = f'[SUGGESTED_ADDITION id={i} author="{author}" date="{date}"]{ins_text}[/SUGGESTED_ADDITION]'
+                                        para_text += tag
+                                        tags_used.add('SUGGESTED_ADDITION')
+                                    elif run.tag.endswith('del'):
+                                        author, date = get_change_metadata(run)
+                                        del_text = get_text(run)
+                                        tag = f'[SUGGESTED_DELETION id={i} author="{author}" date="{date}"]{del_text}[/SUGGESTED_DELETION]'
+                                        para_text += tag
+                                        tags_used.add('SUGGESTED_DELETION')
+                                cell_text += para_text
+                            row_text.append(cell_text)
+                        output.append(' | '.join(row_text))
+            result = '\n\n'.join(output)
+            if tags_used:
+                result = TAG_DEFS + result
+            return result
+    except Exception as e:
+        logging.error(f"Failed to extract document text with comments/suggestions: {e}")
+        return f"[ERROR] Failed to extract document text with comments/suggestions: {e}"

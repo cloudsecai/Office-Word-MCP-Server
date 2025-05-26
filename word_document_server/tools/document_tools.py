@@ -6,6 +6,7 @@ import os
 import json
 from typing import List, Optional
 from docx import Document
+import asyncio
 
 from word_document_server.utils.file_utils import (
     check_file_writeable,
@@ -115,43 +116,10 @@ async def get_document_info(filename: str) -> str:
 
 
 async def get_document_text(filename: str) -> str:
-    """Extract all text content from a Word document (.docx only) with structured table formatting.
-
-    Extracts readable text from paragraphs and tables while preserving table row/column
-    relationships for optimal LLM parsing of structured data like Q&A pairs and forms.
-
-    Use this tool when:
-    - Need to read the actual content of a Word document
-    - Want to process document text with AI/LLM tools
-    - Converting Word content to plain text while preserving data relationships
-    - Extracting text from documents with tables containing paired information
-
-    Args:
-        filename: Path to the Word document (.docx format only)
-
-    Returns:
-        Structured text with clear table formatting:
-        === TABLE N ===
-        Row0: | Col0: Question 1 | Col1: Answer 1 | Col2: Notes 1 |
-        Row1: | Col0: Question 2 | Col1: Answer 2 | Col2: Notes 2 |
-        === END TABLE ===
-
-    Special handling:
-        - Empty cells show as "(empty)"
-        - Merged cells show as "(merged with above)"
-        - Tables and paragraphs appear in document order
-        - Clear boundaries between different tables
-
-    Limitations:
-        - Only works with .docx format (Microsoft Word 2007+)
-        - Does not preserve formatting (bold, italic, fonts, colors)
-        - Cannot extract images, shapes, or embedded objects
-        - Cannot read password-protected documents
-        - Headers/footers are not included
-    """
+    """Extract all text content from a Word document (.docx only) with structured table formatting, including comments and suggestions as inline tags."""
     filename = ensure_docx_extension(filename)
-
-    return get_document_text(filename)
+    from word_document_server.utils import document_utils
+    return await asyncio.to_thread(document_utils.get_document_text, filename)
 
 
 async def get_document_outline(filename: str) -> str:

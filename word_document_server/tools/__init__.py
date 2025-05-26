@@ -67,6 +67,11 @@ from word_document_server.tools.extended_document_tools import (
     is_element_empty,
 )
 
+# Imaging tools
+from word_document_server.tools.imaging_tools import (
+    get_document_page_images,
+)
+
 __all__ = [
     # Document tools
     "create_document",
@@ -112,4 +117,6 @@ __all__ = [
     "add_paragraph_to_table_cell",
     "search_and_replace_in_scope",
     "is_element_empty",
+    # Imaging tools
+    "get_document_page_images",
 ]

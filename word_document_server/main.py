@@ -11,6 +11,7 @@ from word_document_server.tools import (
     protection_tools,
     footnote_tools,
     extended_document_tools,
+    imaging_tools,
 )
 
 
@@ -65,6 +66,9 @@ def register_tools():
     mcp.tool()(extended_document_tools.add_paragraph_to_table_cell)
     mcp.tool()(extended_document_tools.search_and_replace_in_scope)
     mcp.tool()(extended_document_tools.is_element_empty)
+
+    # Imaging tools
+    mcp.tool()(imaging_tools.get_document_page_images)
 
 
 def run_server():

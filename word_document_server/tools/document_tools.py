@@ -151,7 +151,7 @@ async def get_document_text(filename: str) -> str:
     """
     filename = ensure_docx_extension(filename)
 
-    return extract_document_text(filename)
+    return get_document_text(filename)
 
 
 async def get_document_outline(filename: str) -> str:

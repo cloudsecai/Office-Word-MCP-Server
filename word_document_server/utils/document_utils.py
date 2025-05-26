@@ -311,93 +311,84 @@ def extract_document_text_with_comments_and_suggestions(docx_path: str) -> str:
                 date = e.attrib.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}date', '')
                 return author, date
 
-            # Walk paragraphs and tables, reconstructing text with tags
-            ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+            def extract_text_recursive(elem):
+                """Recursively extract text, suggestions, and comments from any element, including inside <w:sdtContent>."""
+                text = ''
+                for child in elem:
+                    tag = child.tag.split('}')[-1]
+                    # Handle comment range
+                    if tag == 'commentRangeStart':
+                        cid = child.attrib.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}id')
+                        anchor_text = ''
+                        # Find the matching commentRangeEnd
+                        siblings = list(elem)
+                        idx = siblings.index(child)
+                        j = idx + 1
+                        while j < len(siblings):
+                            sib = siblings[j]
+                            if sib.tag.endswith('commentRangeEnd') and sib.attrib.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}id') == cid:
+                                break
+                            anchor_text += extract_text_recursive(sib)
+                            j += 1
+                        comment = comments.get(cid, {})
+                        author = comment.get('author', '')
+                        date = comment.get('date', '')
+                        ctext = comment.get('text', '')
+                        tag_str = f'[COMMENT id={cid} author="{author}" date="{date}"]{anchor_text} | {ctext}[/COMMENT]'
+                        text += tag_str
+                        tags_used.add('COMMENT')
+                        logging.info(f"Found comment in nested structure: id={cid}")
+                        continue
+                    # Handle insertions (suggested additions or replacements)
+                    elif tag == 'ins':
+                        author, date = get_change_metadata(child)
+                        ins_text = extract_text_recursive(child)
+                        # Check for replacement (w:del immediately before w:ins)
+                        prev = child.getprevious() if hasattr(child, 'getprevious') else None
+                        if prev is not None and prev.tag.endswith('del'):
+                            del_text = extract_text_recursive(prev)
+                            tag_str = f'[SUGGESTION id={id(child)} author="{author}" date="{date}" original="{del_text}"]{ins_text}[/SUGGESTION]'
+                            tags_used.add('SUGGESTION')
+                            logging.info(f"Found suggestion (replacement) in nested structure.")
+                        else:
+                            tag_str = f'[SUGGESTED_ADDITION id={id(child)} author="{author}" date="{date}"]{ins_text}[/SUGGESTED_ADDITION]'
+                            tags_used.add('SUGGESTED_ADDITION')
+                            logging.info(f"Found suggested addition in nested structure.")
+                        text += tag_str
+                        continue
+                    # Handle deletions (suggested deletions)
+                    elif tag == 'del':
+                        author, date = get_change_metadata(child)
+                        del_text = extract_text_recursive(child)
+                        tag_str = f'[SUGGESTED_DELETION id={id(child)} author="{author}" date="{date}"]{del_text}[/SUGGESTED_DELETION]'
+                        text += tag_str
+                        tags_used.add('SUGGESTED_DELETION')
+                        logging.info(f"Found suggested deletion in nested structure.")
+                        continue
+                    # Handle sdt (structured document tag)
+                    elif tag == 'sdt':
+                        # Descend into sdtContent
+                        sdt_content = child.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}sdtContent')
+                        if sdt_content is not None:
+                            text += extract_text_recursive(sdt_content)
+                        continue
+                    # Handle normal run
+                    elif tag == 'r':
+                        text += get_text(child)
+                    # Recurse for any other element
+                    else:
+                        text += extract_text_recursive(child)
+                return text
+
+            # Replace the paragraph/table extraction loop with recursive extraction
             output = []
             tags_used = set()
-            para_idx = 0
-            for body_child in doc_root.find('w:body', ns):
-                if body_child.tag == '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p':
-                    # Handle paragraph
-                    para_text = ''
-                    i = 0
-                    runs = list(body_child)
-                    while i < len(runs):
-                        run = runs[i]
-                        # Handle comment start
-                        if run.tag.endswith('commentRangeStart'):
-                            cid = run.attrib.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}id')
-                            anchor_text = ''
-                            j = i + 1
-                            # Collect anchor text until commentRangeEnd
-                            while j < len(runs):
-                                if runs[j].tag.endswith('commentRangeEnd') and runs[j].attrib.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}id') == cid:
-                                    break
-                                anchor_text += get_text(runs[j])
-                                j += 1
-                            comment = comments.get(cid, {})
-                            author = comment.get('author', '')
-                            date = comment.get('date', '')
-                            ctext = comment.get('text', '')
-                            tag = f'[COMMENT id={cid} author="{author}" date="{date}"]{anchor_text} | {ctext}[/COMMENT]'
-                            para_text += tag
-                            tags_used.add('COMMENT')
-                            i = j  # Skip to after commentRangeEnd
-                        # Handle insertions (suggested additions or replacements)
-                        elif run.tag.endswith('ins'):
-                            author, date = get_change_metadata(run)
-                            ins_text = get_text(run)
-                            # Check for replacement (w:del immediately before w:ins)
-                            if i > 0 and runs[i-1].tag.endswith('del'):
-                                del_run = runs[i-1]
-                                del_text = get_text(del_run)
-                                tag = f'[SUGGESTION id={i} author="{author}" date="{date}" original="{del_text}"]{ins_text}[/SUGGESTION]'
-                                tags_used.add('SUGGESTION')
-                                # Remove the deletion from output (handled here)
-                                para_text = para_text[:-len(del_text)] if para_text.endswith(del_text) else para_text
-                            else:
-                                tag = f'[SUGGESTED_ADDITION id={i} author="{author}" date="{date}"]{ins_text}[/SUGGESTED_ADDITION]'
-                                tags_used.add('SUGGESTED_ADDITION')
-                            para_text += tag
-                        # Handle deletions (suggested deletions)
-                        elif run.tag.endswith('del'):
-                            author, date = get_change_metadata(run)
-                            del_text = get_text(run)
-                            tag = f'[SUGGESTED_DELETION id={i} author="{author}" date="{date}"]{del_text}[/SUGGESTED_DELETION]'
-                            para_text += tag
-                            tags_used.add('SUGGESTED_DELETION')
-                        # Normal run
-                        elif run.tag.endswith('r'):
-                            para_text += get_text(run)
-                        i += 1
+            ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+            body = doc_root.find('w:body', ns)
+            for body_child in body:
+                para_text = extract_text_recursive(body_child)
+                if para_text.strip():
                     output.append(para_text)
-                    para_idx += 1
-                elif body_child.tag == '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tbl':
-                    # Handle table (flattened as text for now)
-                    for row in body_child.findall('.//w:tr', ns):
-                        row_text = []
-                        for cell in row.findall('.//w:tc', ns):
-                            cell_text = ''
-                            for para in cell.findall('.//w:p', ns):
-                                para_text = ''
-                                for run in para:
-                                    if run.tag.endswith('r'):
-                                        para_text += get_text(run)
-                                    elif run.tag.endswith('ins'):
-                                        author, date = get_change_metadata(run)
-                                        ins_text = get_text(run)
-                                        tag = f'[SUGGESTED_ADDITION id={i} author="{author}" date="{date}"]{ins_text}[/SUGGESTED_ADDITION]'
-                                        para_text += tag
-                                        tags_used.add('SUGGESTED_ADDITION')
-                                    elif run.tag.endswith('del'):
-                                        author, date = get_change_metadata(run)
-                                        del_text = get_text(run)
-                                        tag = f'[SUGGESTED_DELETION id={i} author="{author}" date="{date}"]{del_text}[/SUGGESTED_DELETION]'
-                                        para_text += tag
-                                        tags_used.add('SUGGESTED_DELETION')
-                                cell_text += para_text
-                            row_text.append(cell_text)
-                        output.append(' | '.join(row_text))
             result = '\n\n'.join(output)
             if tags_used:
                 result = TAG_DEFS + result

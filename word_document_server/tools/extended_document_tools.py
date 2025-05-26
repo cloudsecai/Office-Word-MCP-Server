@@ -82,18 +82,38 @@ def _validate_scope_identifier(
 
 
 async def get_paragraph_text_from_document(filename: str, paragraph_index: int) -> str:
-    """Get text content from a specific paragraph in a Word document.
+    """Get text content from a specific paragraph in a Word document (.docx only).
+
+    Retrieves the complete text content and metadata from a single paragraph by index.
+    Useful for reading specific parts of a document without loading all content.
+
+    Use this tool when:
+    - Need to read just one specific paragraph from a document
+    - Want paragraph metadata (style, formatting details)
+    - Checking content of a particular paragraph before editing
+    - Reading document content paragraph by paragraph
 
     Args:
-        filename: Path to the Word document
-        paragraph_index: Index of the paragraph to read (0-based)
+        filename: Path to the Word document (.docx format only)
+        paragraph_index: Index of the paragraph to read (0-based, first paragraph = 0)
 
     Returns:
-        JSON string containing the paragraph text and metadata
+        JSON string containing:
+        - paragraph text content
+        - style information
+        - formatting details
+        - paragraph index
+        - error message if paragraph doesn't exist or can't be read
+
+    Limitations:
+        - Only works with .docx format (Microsoft Word 2007+)
+        - Cannot read password-protected documents
+        - Paragraph index must exist in document
+        - Does not include tables (tables are separate from paragraphs)
 
     Example:
         get_paragraph_text_from_document("report.docx", 0)
-        # Returns first paragraph text
+        # Returns first paragraph text and metadata
     """
     filename = ensure_docx_extension(filename)
 
@@ -114,19 +134,46 @@ async def get_paragraph_text_from_document(filename: str, paragraph_index: int) 
 async def find_text_in_document(
     filename: str, text_to_find: str, match_case: bool = True, whole_word: bool = False
 ) -> str:
-    """Find all occurrences of text in a Word document with location details.
+    """Find all occurrences of text in a Word document (.docx only) with precise location details.
+
+    Searches through all paragraphs and table cells to find text matches. Returns detailed
+    location information for each match including paragraph/table/cell coordinates.
+
+    Use this tool when:
+    - Need to locate specific text before editing or replacing
+    - Want to know exact positions of text in document structure
+    - Searching for text across both paragraphs and tables
+    - Need context around found text for verification
 
     Args:
-        filename: Path to the Word document
-        text_to_find: Text to search for
+        filename: Path to the Word document (.docx format only)
+        text_to_find: Text string to search for (cannot be empty)
         match_case: Whether search should be case-sensitive (default: True)
         whole_word: Whether to match whole words only (default: False)
 
     Returns:
-        JSON string containing all matches with their locations
+        JSON string containing:
+        - query details (search text, options used)
+        - array of all matches with locations
+        - total count of matches
+        - context text around each match
+        - table/paragraph location details for each match
+
+    Search locations:
+        - All paragraph text content
+        - All table cell text content
+        - Provides coordinates for both paragraph and table matches
+
+    Limitations:
+        - Only works with .docx format (Microsoft Word 2007+)
+        - Cannot search password-protected documents
+        - Does not search headers, footers, or footnotes
+        - Does not search embedded objects or images
+        - Whole word matching uses simple word boundary detection
 
     Example:
         find_text_in_document("report.docx", "summary", match_case=False)
+        # Finds all case-insensitive matches of "summary"
     """
     filename = ensure_docx_extension(filename)
 
@@ -146,12 +193,44 @@ async def find_text_in_document(
 
 
 async def convert_to_pdf(filename: str, output_filename: Optional[str] = None) -> str:
-    """Convert a Word document to PDF format.
+    """Convert a Word document (.docx only) to PDF format using available system tools.
+
+    Attempts to convert using platform-appropriate tools: Microsoft Word on Windows,
+    LibreOffice on Linux/macOS. Requires appropriate software to be installed.
+
+    Use this tool when:
+    - Need to create PDF version of Word document
+    - Want to preserve document formatting in PDF
+    - Converting for sharing or archival purposes
+    - Need non-editable version of document
 
     Args:
-        filename: Path to the Word document
-        output_filename: Optional path for the output PDF. If not provided,
-                         will use the same name with .pdf extension
+        filename: Path to the Word document (.docx format only)
+        output_filename: Optional path for output PDF (auto-generates if not provided)
+
+    Returns:
+        Success message with PDF path, or error message with details
+
+    Conversion process:
+        - Windows: Uses docx2pdf library (requires Microsoft Word)
+        - Linux/macOS: Uses LibreOffice command line (requires LibreOffice)
+        - Fallback: Attempts pandoc if available
+
+    Requirements by platform:
+        - Windows: Microsoft Word must be installed
+        - Linux/macOS: LibreOffice must be installed
+        - Alternative: pandoc (cross-platform)
+
+    Limitations:
+        - Only works with .docx format (Microsoft Word 2007+)
+        - Requires external software for conversion
+        - Complex formatting may not convert perfectly
+        - Cannot convert password-protected documents
+        - Output quality depends on conversion tool used
+
+    Example:
+        convert_to_pdf("report.docx", "report.pdf")
+        # Creates PDF version of the Word document
     """
     filename = ensure_docx_extension(filename)
 
@@ -322,16 +401,42 @@ async def get_document_structure_details_from_document(filename: str) -> str:
 async def get_table_cell_content_from_document(
     filename: str, table_index: int, row_index: int, col_index: int
 ) -> str:
-    """Get detailed content from a specific table cell in a Word document.
+    """Get detailed content and formatting from a specific table cell in a Word document (.docx only).
+
+    Retrieves comprehensive information about a single table cell including text content,
+    paragraph details, formatting information, and cell properties like merged cell status.
+
+    Use this tool when:
+    - Need to read content from a specific table cell
+    - Want detailed formatting information for a cell
+    - Checking cell properties (merged cells, spanning)
+    - Reading table data before making modifications
 
     Args:
-        filename: Path to the Word document
-        table_index: Index of the table (0-based)
-        row_index: Index of the row (0-based)
-        col_index: Index of the column (0-based)
+        filename: Path to the Word document (.docx format only)
+        table_index: Index of the table (0-based, first table = 0)
+        row_index: Index of the row (0-based, first row = 0)
+        col_index: Index of the column (0-based, first column = 0)
 
     Returns:
-        JSON string containing detailed cell content and formatting
+        JSON string containing:
+        - cell text content (combined from all paragraphs)
+        - detailed paragraph information with formatting
+        - cell location coordinates
+        - grid_span information (if cell spans multiple columns)
+        - v_merge information (if cell is part of vertical merge)
+        - run-level formatting details (bold, italic, font, etc.)
+        - error message if coordinates are invalid
+
+    Cell properties explained:
+        - grid_span: number of columns this cell spans (1 = normal, >1 = spans multiple columns)
+        - v_merge: vertical merge status (None = normal, "continue" = merged with cell above)
+
+    Limitations:
+        - Only works with .docx format (Microsoft Word 2007+)
+        - Cannot read password-protected documents
+        - Table, row, and column indexes must exist in document
+        - Does not include images or embedded objects in cells
 
     Example:
         get_table_cell_content_from_document("report.docx", 0, 1, 2)

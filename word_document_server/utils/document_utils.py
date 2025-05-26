@@ -38,13 +38,60 @@ def get_document_properties(doc_path: str) -> Dict[str, Any]:
 
 
 def extract_document_text(doc_path: str) -> str:
-    """Extract all text from a Word document."""
+    """Extract all text from a Word document with structured table formatting for LLM parsing.
+
+    Extracts text while preserving table structure with clear row/cell boundaries
+    to maintain relationships between cells (essential for Q&A pairs, forms, etc.).
+
+    Args:
+        doc_path: Path to the Word document
+
+    Returns:
+        Structured text with clear table formatting for optimal LLM parsing
+    """
     import os
 
     if not os.path.exists(doc_path):
         return f"Document {doc_path} does not exist"
 
     try:
+        from word_document_server.utils.document_analyzer import DocumentAnalyzer
+
+        doc = Document(doc_path)
+        analyzer = DocumentAnalyzer(doc_path)
+        structure = analyzer.get_complete_structure()
+
+        if "error" in structure:
+            return structure["error"]
+
+        text_parts = []
+        table_index = 0
+
+        # Get all body elements and process them in order
+        for element in doc.element.body:
+            tag_name = element.tag.split("}")[-1] if "}" in element.tag else element.tag
+
+            if tag_name == "p":  # paragraph
+                # Find the corresponding paragraph in the parsed document
+                for para in doc.paragraphs:
+                    if para._element == element:
+                        para_text = para.text.strip()
+                        if para_text:  # Only add non-empty paragraphs
+                            text_parts.append(para_text)
+                        break
+
+            elif tag_name == "tbl":  # table
+                if table_index < len(structure["tables"]):
+                    table_text = _format_table_for_llm(
+                        structure["tables"][table_index], table_index
+                    )
+                    text_parts.append(table_text)
+                    table_index += 1
+
+        return "\n\n".join(text_parts)
+
+    except Exception:
+        # Fallback to simple extraction if structured fails
         doc = Document(doc_path)
         text = []
 
@@ -58,8 +105,32 @@ def extract_document_text(doc_path: str) -> str:
                         text.append(paragraph.text)
 
         return "\n".join(text)
-    except Exception as e:
-        return f"Failed to extract text: {str(e)}"
+
+
+def _format_table_for_llm(table_data: Dict[str, Any], table_index: int) -> str:
+    """Format table data with clear row/cell boundaries for LLM parsing."""
+    if not table_data.get("cells"):
+        return f"=== TABLE {table_index + 1} (empty) ==="
+
+    formatted_lines = [f"=== TABLE {table_index + 1} ==="]
+
+    for row_idx, row_cells in enumerate(table_data["cells"]):
+        row_parts = []
+        for col_idx, cell in enumerate(row_cells):
+            cell_text = cell.get("text", "").strip()
+            # Handle merged cells
+            if cell.get("v_merge") == "continue":
+                cell_text = "(merged with above)"
+            elif not cell_text:
+                cell_text = "(empty)"
+
+            row_parts.append(f"Col{col_idx}: {cell_text}")
+
+        row_line = f"Row{row_idx}: | " + " | ".join(row_parts) + " |"
+        formatted_lines.append(row_line)
+
+    formatted_lines.append("=== END TABLE ===")
+    return "\n".join(formatted_lines)
 
 
 def get_document_structure(doc_path: str) -> Dict[str, Any]:
